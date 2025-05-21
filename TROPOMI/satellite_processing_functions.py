@@ -95,9 +95,9 @@ def global_MODIS_grid(nx, ny, step):
     lon = lon.reshape(-1,1)
     return lon, lat
 
-def read_scattered_TROPOMI_data(file_name, data_type, threshold = 0.5, bounds = 0):
+def read_scattered_TROPOMI_data(file_name, data_type, threshold = 0.5, bounds = 0, geolocation = False):
     """
-    Simliar to read_scattered_TROPOMI_data_with_geolocations, but outputs latitudes and longitudes based on the centroid of each footprint.
+    Reads in L2 TROPOMI datasets and outputs it as a GeoDataFrame.
 
     Parameters
     ----------
@@ -113,81 +113,80 @@ def read_scattered_TROPOMI_data(file_name, data_type, threshold = 0.5, bounds = 
     bounds : float array in the following format
         [lon_min, lat_min, lon_max, lat_max]. If you do not want any bounds and want the whole swath, don't 
         include this parameter (DEFAULT PARAMETER is 0)
+
+    geolocation : boolean
+        If true, will output the TROPOMI footprints (pixels) as geometry. If false, will output (x,y) centroid geometries.
     
     Returns
     -------
     gdf
-        A GeoDataFrame (from geopandas) dataframe containing the scattered data with (x,y) centroid geometries
+        A GeoDataFrame (from geopandas) dataframe containing the scattered data with specified geometries.
     """
     original_data = xr.open_dataset(file_name, group = 'PRODUCT') # Contains the actual remote sensing product
-    
+
     if data_type == 'CH4':
         df = original_data[['delta_time', 'time_utc', 'qa_value', 'methane_mixing_ratio', 'methane_mixing_ratio_precision', 'methane_mixing_ratio_bias_corrected']].to_dataframe() # Takes the variables you are interested in
-
-    if bounds != 0:
-        df = df[(df.latitude >= bounds[1]) & (df.latitude <= bounds[3]) & (df.longitude >= bounds[0]) & (df.longitude <= bounds[2])];
-    
-    df = df[df.qa_value > threshold] # Quality-filtering
-    gdf = gpd.GeoDataFrame(df, geometry = gpd.points_from_xy(df['longitude'], df['latitude'])) # Create a GeoDataFrame
-    
-    return gdf;
-
-def read_scattered_TROPOMI_data_with_geolocations(file_name, data_type, threshold = 0.5, bounds = 0):
-    
-    """
-    Reads in scattered TROPOMI data and outputs a GeoDataFrame with this data and the corresponding polygon geometries. Use this
-    if you need the TROPOMI footprints!
-    
-    Parameters
-    ----------
-    file_name : string
-        One filename referring to SIF dataset of interest.
-
-    data_type : string
-        Specifies what type of dataset this is
-
-    threshold : float
-        Threshold for QA thresholding (DEFAULT PARAMETER is 0.5)
-
-    bounds : float array in the following format
-        [lon_min, lat_min, lon_max, lat_max]. If you do not want any bounds and want the whole swath, don't 
-        include this parameter (DEFAULT PARAMETER is 0)
-    
-    Returns
-    -------
-    gdf
-        A GeoDataFrame (from geopandas) dataframe containing the scattered data with geolocations (lat, lon corners)
-    """
-    original_data = xr.open_dataset(file_name, group = 'PRODUCT') # Contains the actual remote sensing product
-    supporting_data = xr.open_dataset(file_name, group = 'PRODUCT/SUPPORT_DATA/GEOLOCATIONS') # Supporting data contains all the geolocations
-
-    # We merge before, because sometimes the metadata is messed up (time was 0)
-    merged_dataset = xr.merge([original_data, supporting_data], join = 'left').drop(['layer', 'level']).to_dataframe()
-    merged_dataset = merged_dataset.dropna(subset = ['methane_mixing_ratio'], axis = 0);
-    merged_dataset = merged_dataset[(merged_dataset.latitude >= bounds[1]) & (merged_dataset.latitude <= bounds[3]) & (merged_dataset.longitude >= bounds[0]) & (merged_dataset.longitude <= bounds[2])];
-
-    # QA control and datetime management
-    merged_dataset = merged_dataset[merged_dataset.qa_value > threshold];
-    
-    # Pivot on corner!
-    pivot_geolocations = merged_dataset[['latitude_bounds', 'longitude_bounds']].reset_index("corner")
-    pivot_geolocations = pivot_geolocations.pivot(columns="corner").droplevel(0, axis=1) 
-    pivot_geolocations.columns = ['lat_bound_1', 'lat_bound_2', 'lat_bound_3', 'lat_bound_4', 'lon_bound_1', 'lon_bound_2', 'lon_bound_3', 'lon_bound_4']
-
-    if data_type == 'CH4':
-        data = original_data[['latitude', 'longitude', 'delta_time', 'time_utc', 'qa_value', 'methane_mixing_ratio', 'methane_mixing_ratio_precision', 'methane_mixing_ratio_bias_corrected']].to_dataframe() # Takes the variables you are interested in
-        
-        df = pd.merge(data, pivot_geolocations, left_index = True, right_index = True, how = 'right');        
         df['time_utc'] = pd.to_datetime(df['time_utc']);
+        
+    elif data_type == 'SO2':
+        df = original_data[['latitude', 'longitude', 'delta_time', 'time_utc', 'qa_value', 'sulfurdioxide_total_vertical_column', 'sulfurdioxide_total_vertical_column_precision']].to_dataframe() # Takes the variables you are interested in
+        df['time_utc'] = pd.to_datetime(df['delta_time']);
+
+        df = df[df.sulfurdioxide_total_vertical_column >= -0.001] # Filtering for outliers; see User Guide for negative values
+    
+    if (bounds != 0):
+        df = df[(df.latitude >= bounds[1]) & (df.latitude <= bounds[3]) & (df.longitude >= bounds[0]) & (df.longitude <= bounds[2])];
+    df = df[df.qa_value > threshold] # Quality-filtering
     
     original_data.close()
-    supporting_data.close()
 
-     # Create polygons representing each TROPOMI footprint
-    df['geometry'] = df.apply(lambda x: Polygon(zip([x.lon_bound_1, x.lon_bound_2, x.lon_bound_3, x.lon_bound_4], [x.lat_bound_1, x.lat_bound_2, x.lat_bound_3, x.lat_bound_4])), axis = 1);
-    gdf = gpd.GeoDataFrame(df, geometry = 'geometry');
+    if len(df) == 0:
+        return df; # Saves compute power if there is no data that fulfills quality threshold and geographic bounds.
+
+    if data_type == 'SO2':
+        # SO2 layer height data
+        df_layer_height = xr.open_dataset(file_name, group = 'PRODUCT/SO2_LAYER_HEIGHT');
+        df_layer_height = df_layer_height[['sulfurdioxide_layer_height', 'sulfurdioxide_total_vertical_column_layer_height', 'qa_value_layer_height']].to_dataframe();
+        df_layer_height = df_layer_height[df_layer_height.qa_value_layer_height > 0.5];
+        df_layer_height = df_layer_height.dropna(subset = 'sulfurdioxide_layer_height', axis = 0)
+        df = pd.merge(df, df_layer_height, left_index = True, right_index = True, how = 'left');
+
+    ###########################################
+    #### IF WE NEED LATITUDE + LONGITUDE CORNERS
+    ###########################################
+    if geolocation:
+        supporting_data = xr.open_dataset(file_name, group = 'PRODUCT/SUPPORT_DATA/GEOLOCATIONS') # Supporting data contains all the geolocations
+        
+        # We merge before, because sometimes the metadata is messed up (time was 0)
+        if (data_type == 'CH4'):
+            merged_dataset = xr.merge([original_data, supporting_data], join = 'left').drop(['layer', 'level']).to_dataframe();
+            merged_dataset = merged_dataset.dropna(subset = ['methane_mixing_ratio'], axis = 0);
+        elif data_type == 'SO2':
+            merged_dataset = xr.merge([original_data, supporting_data], join = 'left').drop('layer').to_dataframe()
+            merged_dataset = merged_dataset.dropna(subset = ['sulfurdioxide_total_vertical_column'], axis = 0);
+            merged_dataset = merged_dataset[merged_dataset.sulfurdioxide_total_vertical_column >= -0.001] # Filtering for outliers; see User Guide for negative values
+        merged_dataset = merged_dataset[merged_dataset.qa_value > threshold];
+        
+        if bounds != 0:
+            merged_dataset = merged_dataset[(merged_dataset.latitude >= bounds[1]) & (merged_dataset.latitude <= bounds[3]) & (merged_dataset.longitude >= bounds[0]) & (merged_dataset.longitude <= bounds[2])];
+
+        # Pivot on corner!
+        pivot_geolocations = merged_dataset[['latitude_bounds', 'longitude_bounds']].reset_index("corner")
+        pivot_geolocations = pivot_geolocations.pivot(columns="corner").droplevel(0, axis = 1) 
+        pivot_geolocations.columns = ['lat_bound_1', 'lat_bound_2', 'lat_bound_3', 'lat_bound_4', 'lon_bound_1', 'lon_bound_2', 'lon_bound_3', 'lon_bound_4']
+        supporting_data.close()
+
+    ################################################
+    #### END IF WE NEED LATITUDE + LONGITUDE CORNERS
+    ################################################
+
+    if geolocation:
+        df = pd.merge(df, pivot_geolocations, left_index = True, right_index = True, how = 'right');        
+        df['geometry'] = df.apply(lambda x: Polygon(zip([x.lon_bound_1, x.lon_bound_2, x.lon_bound_3, x.lon_bound_4], [x.lat_bound_1, x.lat_bound_2, x.lat_bound_3, x.lat_bound_4])), axis = 1); # Create polygons representing each TROPOMI footprint
+        gdf = gpd.GeoDataFrame(df, geometry = 'geometry');
+    else:
+        gdf = gpd.GeoDataFrame(df, geometry = gpd.points_from_xy(df['longitude'], df['latitude'])) # Create a GeoDataFrame
     return gdf;
-
 
 def read_scattered_data(file_name, new_grid, time, data_type):
     
@@ -364,6 +363,11 @@ def regrid_scattered_data(gdf, new_grid, data_type):
         cell.loc[dissolve.index, 'ch4'] = dissolve.methane_mixing_ratio_bias_corrected.values # Cell now contains the mean of each grid.
         cell.loc[dissolve_std.index, 'ch4_std'] = dissolve_std.methane_mixing_ratio_bias_corrected.values # Cell now contains the STDEV of each grid.
         cell.loc[dissolve_count.index, 'ch4_number_of_measurements'] = dissolve_count.methane_mixing_ratio_bias_corrected.values # Cell now contains the STDEV of each grid.
+
+    elif (data_type == 'SO2'):
+        cell.loc[dissolve.index, 'so2'] = dissolve.sulfurdioxide_total_vertical_column.values # Cell now contains the mean of each grid.
+        cell.loc[dissolve_std.index, 'so2_std'] = dissolve_std.sulfurdioxide_total_vertical_column.values # Cell now contains the STDEV of each grid.
+        cell.loc[dissolve_count.index, 'so2_number_of_measurements'] = dissolve_count.sulfurdioxide_total_vertical_column.values # Cell now contains the STDEV of each grid.
     
     cell['lon'] = cell.geometry.centroid.x
     cell['lat'] = cell.geometry.centroid.y
