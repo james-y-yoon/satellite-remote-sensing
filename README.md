@@ -1,8 +1,9 @@
 # Satellite Remote Sensing in Python
 
-Here is a repository of all of my satellite/remote sensing processing scripts! :-)
+Here is a repository of all of my satellite/remote sensing processing scripts that I've written over the past couple of years! :-)
 
---
+---
+
 ### What scripts are available?
 Currently, there are scripts for:
 
@@ -11,6 +12,7 @@ Currently, there are scripts for:
 - N/A: MOPITT, maybe OMI, maybe GEMS, maybe MODIS Ocean Color? 
 
 ---
+
 ### What should I know before running these scripts?
 Before you run any scripts, make sure you have the following libraries:
 
