@@ -13,6 +13,14 @@ Currently, there are scripts for:
 
 ---
 
+---
+
+### Where did I get the data?
+
+- For TROPOMI, I got all my data from EarthData Search, as the old dhusget script no longer works.
+
+---
+
 ### What should I know before running these scripts?
 Before you run any scripts, make sure you have the following libraries:
 
