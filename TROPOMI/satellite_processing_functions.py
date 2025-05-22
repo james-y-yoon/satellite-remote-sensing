@@ -95,7 +95,109 @@ def global_MODIS_grid(nx, ny, step):
     lon = lon.reshape(-1,1)
     return lon, lat
 
-def read_scattered_TROPOMI_data(file_name, data_type, threshold = 0.5, bounds = 0, geolocation = False):
+def save_averaging_kernel(file_name, product_ds, data_type, bounds, threshold):
+    """
+    Helper function that saves the averaging kernel, pressure dimensions, and a priori profile from the TROPOMI dataset.
+
+    Parameters
+    ----------
+    file_name : String
+        The name of the TROPOMI L2 data file
+    
+    product_ds : xarray Dataset
+        Dataset of the PRODUCT (main) TROPOMI product
+
+    data_type : String
+        Name of the TROPOMI dataset (e.g. CH4, SO2)
+
+    bounds : array of [lon_min, lat_min, lon_max, lat_ax]
+        Geographic bounds
+    
+    Threshold : float
+        QA threshold
+
+    Returns
+    -------
+    avg_kernel : DataFrame
+        Dataframe containing the averaging kernel, a priori profile, and pressures
+    """
+    lat_lon = product_ds[['latitude', 'longitude', 'qa_value']];
+
+    if data_type == 'CH4':
+        averaging_kernel_group = xr.open_dataset(file_name, group = 'PRODUCT/SUPPORT_DATA/DETAILED_RESULTS');
+        averaging_kernel = averaging_kernel_group[['column_averaging_kernel']]
+    
+        input_data_group = xr.open_dataset(file_name, group = 'PRODUCT/SUPPORT_DATA/INPUT_DATA')
+        input_data = input_data_group[['methane_profile_apriori', 'surface_pressure', 'pressure_interval']]
+
+    avg_kernel = xr.merge([lat_lon, averaging_kernel, input_data], join = 'left');
+
+    input_data.close();
+    averaging_kernel.close();
+
+    avg_kernel = avg_kernel.to_dataframe();
+    
+    if bounds != 0:
+        avg_kernel = avg_kernel[(avg_kernel.latitude >= bounds[1]) & (avg_kernel.latitude <= bounds[3]) & (avg_kernel.longitude >= bounds[0]) & (avg_kernel.longitude <= bounds[2])];
+
+    avg_kernel = avg_kernel[avg_kernel.qa_value > threshold]
+    avg_kernel = avg_kernel.drop(['latitude', 'longitude', 'qa_value'], axis = 1).dropna(subset = ['column_averaging_kernel'], axis = 0);
+    return avg_kernel;
+
+def save_pixel_borders(file_name, product_ds, data_type, bounds, threshold):
+    """
+    Helper function that saves pixel borders from the TROPOMI dataset.
+
+    Parameters
+    ----------
+    file_name : String
+        The name of the TROPOMI L2 data file
+    
+    product_ds : xarray Dataset
+        Dataset of the PRODUCT (main) TROPOMI product
+
+    data_type : String
+        Name of the TROPOMI dataset (e.g. CH4, SO2)
+
+    bounds : array of [lon_min, lat_min, lon_max, lat_ax]
+        Geographic bounds
+    
+    Threshold : float
+        QA threshold
+
+    Returns
+    -------
+    pivot_geolocations : DataFrame
+        Dataframe containing the four corners of the TROPOMI pixel
+    """
+    supporting_data = xr.open_dataset(file_name, group = 'PRODUCT/SUPPORT_DATA/GEOLOCATIONS') # Supporting data contains all the geolocations
+        
+    # We merge before, because sometimes the metadata is messed up (time was 0)
+    if (data_type == 'CH4'):
+        merged_dataset = xr.merge([product_ds, supporting_data], join = 'left').drop(['layer', 'level']).to_dataframe();
+        merged_dataset = merged_dataset.dropna(subset = ['methane_mixing_ratio'], axis = 0);
+    elif data_type == 'SO2':
+        merged_dataset = xr.merge([product_ds, supporting_data], join = 'left').drop('layer').to_dataframe()
+        merged_dataset = merged_dataset.dropna(subset = ['sulfurdioxide_total_vertical_column'], axis = 0);
+        merged_dataset = merged_dataset[merged_dataset.sulfurdioxide_total_vertical_column >= -0.001] # Filtering for outliers; see User Guide for negative values
+    elif data_type == 'NO2':
+        merged_dataset = xr.merge([product_ds, supporting_data], join = 'left').to_dataframe()
+        merged_dataset = merged_dataset.dropna(subset = ['nitrogendioxide_tropospheric_column'], axis = 0);
+    merged_dataset = merged_dataset[merged_dataset.qa_value > threshold];
+        
+    if bounds != 0:
+        merged_dataset = merged_dataset[(merged_dataset.latitude >= bounds[1]) & (merged_dataset.latitude <= bounds[3]) & (merged_dataset.longitude >= bounds[0]) & (merged_dataset.longitude <= bounds[2])];
+    
+    supporting_data.close()
+    
+    # Pivot on corner!
+    pivot_geolocations = merged_dataset[['latitude_bounds', 'longitude_bounds']].reset_index("corner")
+    pivot_geolocations = pivot_geolocations.pivot(columns="corner").droplevel(0, axis = 1) 
+    pivot_geolocations.columns = ['lat_bound_1', 'lat_bound_2', 'lat_bound_3', 'lat_bound_4', 'lon_bound_1', 'lon_bound_2', 'lon_bound_3', 'lon_bound_4']
+    return pivot_geolocations;
+
+
+def read_scattered_TROPOMI_data(file_name, data_type, threshold = 0.5, bounds = 0, geolocation = False, averaging_kernel = False):
     """
     Reads in L2 TROPOMI datasets and outputs it as a GeoDataFrame.
 
@@ -133,11 +235,15 @@ def read_scattered_TROPOMI_data(file_name, data_type, threshold = 0.5, bounds = 
         df['time_utc'] = pd.to_datetime(df['delta_time']);
 
         df = df[df.sulfurdioxide_total_vertical_column >= -0.001] # Filtering for outliers; see User Guide for negative values
+
+    elif data_type == 'NO2':
+        threshold = 0.75 # Required for tropospheric NO2 columns -- different from the rest!
+        df = original_data[['latitude', 'longitude', 'delta_time', 'time_utc', 'qa_value', 'nitrogendioxide_tropospheric_column', 'nitrogendioxide_tropospheric_column_precision']].to_dataframe() # Takes the variables you are interested in # ['averaging_kernel']
+        df['time_utc'] = pd.to_datetime(df['delta_time']);
     
     if (bounds != 0):
         df = df[(df.latitude >= bounds[1]) & (df.latitude <= bounds[3]) & (df.longitude >= bounds[0]) & (df.longitude <= bounds[2])];
     df = df[df.qa_value > threshold] # Quality-filtering
-    
     original_data.close()
 
     if len(df) == 0:
@@ -151,36 +257,14 @@ def read_scattered_TROPOMI_data(file_name, data_type, threshold = 0.5, bounds = 
         df_layer_height = df_layer_height.dropna(subset = 'sulfurdioxide_layer_height', axis = 0)
         df = pd.merge(df, df_layer_height, left_index = True, right_index = True, how = 'left');
 
-    ###########################################
-    #### IF WE NEED LATITUDE + LONGITUDE CORNERS
-    ###########################################
-    if geolocation:
-        supporting_data = xr.open_dataset(file_name, group = 'PRODUCT/SUPPORT_DATA/GEOLOCATIONS') # Supporting data contains all the geolocations
-        
-        # We merge before, because sometimes the metadata is messed up (time was 0)
-        if (data_type == 'CH4'):
-            merged_dataset = xr.merge([original_data, supporting_data], join = 'left').drop(['layer', 'level']).to_dataframe();
-            merged_dataset = merged_dataset.dropna(subset = ['methane_mixing_ratio'], axis = 0);
-        elif data_type == 'SO2':
-            merged_dataset = xr.merge([original_data, supporting_data], join = 'left').drop('layer').to_dataframe()
-            merged_dataset = merged_dataset.dropna(subset = ['sulfurdioxide_total_vertical_column'], axis = 0);
-            merged_dataset = merged_dataset[merged_dataset.sulfurdioxide_total_vertical_column >= -0.001] # Filtering for outliers; see User Guide for negative values
-        merged_dataset = merged_dataset[merged_dataset.qa_value > threshold];
-        
-        if bounds != 0:
-            merged_dataset = merged_dataset[(merged_dataset.latitude >= bounds[1]) & (merged_dataset.latitude <= bounds[3]) & (merged_dataset.longitude >= bounds[0]) & (merged_dataset.longitude <= bounds[2])];
-
-        # Pivot on corner!
-        pivot_geolocations = merged_dataset[['latitude_bounds', 'longitude_bounds']].reset_index("corner")
-        pivot_geolocations = pivot_geolocations.pivot(columns="corner").droplevel(0, axis = 1) 
-        pivot_geolocations.columns = ['lat_bound_1', 'lat_bound_2', 'lat_bound_3', 'lat_bound_4', 'lon_bound_1', 'lon_bound_2', 'lon_bound_3', 'lon_bound_4']
-        supporting_data.close()
-
-    ################################################
-    #### END IF WE NEED LATITUDE + LONGITUDE CORNERS
-    ################################################
+    #### Start options
+    if averaging_kernel:
+        if data_type != 'NO2':
+            avg_kernel = save_averaging_kernel(file_name, original_data, data_type, bounds, threshold);
+            df = pd.merge(df, avg_kernel, left_index = True, right_index = True);
 
     if geolocation:
+        pivot_geolocations = save_pixel_borders(file_name, original_data, data_type, bounds, threshold);
         df = pd.merge(df, pivot_geolocations, left_index = True, right_index = True, how = 'right');        
         df['geometry'] = df.apply(lambda x: Polygon(zip([x.lon_bound_1, x.lon_bound_2, x.lon_bound_3, x.lon_bound_4], [x.lat_bound_1, x.lat_bound_2, x.lat_bound_3, x.lat_bound_4])), axis = 1); # Create polygons representing each TROPOMI footprint
         gdf = gpd.GeoDataFrame(df, geometry = 'geometry');
@@ -368,9 +452,64 @@ def regrid_scattered_data(gdf, new_grid, data_type):
         cell.loc[dissolve.index, 'so2'] = dissolve.sulfurdioxide_total_vertical_column.values # Cell now contains the mean of each grid.
         cell.loc[dissolve_std.index, 'so2_std'] = dissolve_std.sulfurdioxide_total_vertical_column.values # Cell now contains the STDEV of each grid.
         cell.loc[dissolve_count.index, 'so2_number_of_measurements'] = dissolve_count.sulfurdioxide_total_vertical_column.values # Cell now contains the STDEV of each grid.
+        
+    elif (data_type == 'NO2'):
+        cell.loc[dissolve.index, 'tropospheric_no2'] = dissolve.nitrogendioxide_tropospheric_column.values # Cell now contains the mean of each grid.
+        cell.loc[dissolve_std.index, 'tropospheric_no2_std'] = dissolve_std.nitrogendioxide_tropospheric_column.values # Cell now contains the STDEV of each grid.
+        cell.loc[dissolve_count.index, 'no2_number_of_measurements'] = dissolve_count.nitrogendioxide_tropospheric_column.values # Cell now contains the STDEV of each grid.
+
+    elif (data_type == 'H2O'):
+        cell.loc[dissolve.index, 'H2O_column'] = dissolve.h2o_column.values # Cell now contains the mean of each grid.
+        cell.loc[dissolve_std.index, 'H2O_column_std'] = dissolve_std.h2o_column.values # Cell now contains the STDEV of each grid.
+        cell.loc[dissolve.index, 'HDO_column'] = dissolve.hdo_column.values # Cell now contains the STDEV of each grid.
+        cell.loc[dissolve_std.index, 'HDO_column_std'] = dissolve_std.hdo_column.values # Cell now contains the STDEV of each grid.
+        cell.loc[dissolve.index, 'delta_d'] = dissolve.deltad.values # Cell now contains the STDEV of each grid.
+        cell.loc[dissolve_std.index, 'delta_d_std'] = dissolve_std.deltad.values # Cell now contains the STDEV of each grid.
     
     cell['lon'] = cell.geometry.centroid.x
     cell['lat'] = cell.geometry.centroid.y
     
     cell.drop(columns = ['geometry'], inplace = True)
     return cell
+    
+
+def read_scattered_TROPOMI_HDO(file_name, bounds = 0):
+    """
+    Reads in L2 TROPOMI H2O/HDO datasets and outputs it as a GeoDataFrame.
+
+    Parameters
+    ----------
+    file_name : string
+        One filename referring to SIF dataset of interest.
+
+    bounds : float array in the following format
+        [lon_min, lat_min, lon_max, lat_max]. If you do not want any bounds and want the whole swath, don't 
+        include this parameter (DEFAULT PARAMETER is 0)
+
+    geolocation : boolean
+        If true, will output the TROPOMI footprints (pixels) as geometry. If false, will output (x,y) centroid geometries.
+    
+    Returns
+    -------
+    gdf
+        A GeoDataFrame (from geopandas) dataframe containing the scattered data with specified geometries.
+    """
+    original_data = xr.open_dataset(file_name, group = 'target_product') # Contains the actual remote sensing product
+    location_data = xr.open_dataset(file_name, group = 'instrument') # Contains the actual remote sensing product
+    
+    df = original_data[['deltad', 'deltad_precision', 'h2o_column', 'h2o_column_precision', 'hdo_column', 'hdo_column_precision']].to_dataframe() # Takes the variables you are interested in # ['averaging_kernel']
+    df_location = location_data[['latitude_center', 'longitude_center']].to_dataframe()
+    
+    df = pd.merge(df, df_location, left_index = True, right_index = True, how = 'left')
+
+    original_data.close()
+    location_data.close()
+    
+    if (bounds != 0):
+        df = df[(df.latitude_center >= bounds[1]) & (df.latitude_center <= bounds[3]) & (df.longitude_center >= bounds[0]) & (df.longitude_center <= bounds[2])];
+    
+    if len(df) == 0:
+        return df; # Saves compute power if there is no data that fulfills quality threshold and geographic bounds.
+        
+    gdf = gpd.GeoDataFrame(df, geometry = gpd.points_from_xy(df['longitude_center'], df['latitude_center'])) # Create a GeoDataFrame
+    return gdf;
