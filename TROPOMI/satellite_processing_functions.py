@@ -130,6 +130,13 @@ def save_averaging_kernel(file_name, product_ds, data_type, bounds, threshold):
         input_data_group = xr.open_dataset(file_name, group = 'PRODUCT/SUPPORT_DATA/INPUT_DATA')
         input_data = input_data_group[['methane_profile_apriori', 'surface_pressure', 'pressure_interval']]
 
+    elif data_type == 'HCHO':
+        averaging_kernel_group = xr.open_dataset(file_name, group = 'PRODUCT/SUPPORT_DATA/DETAILED_RESULTS');
+        averaging_kernel = averaging_kernel_group[['averaging_kernel', 'formaldehyde_profile_apriori']]
+    
+        input_data_group = xr.open_dataset(file_name, group = 'PRODUCT/SUPPORT_DATA/INPUT_DATA')
+        input_data = input_data_group[['tm5_constant_a', 'tm5_constant_b']]
+
     avg_kernel = xr.merge([lat_lon, averaging_kernel, input_data], join = 'left');
 
     input_data.close();
@@ -141,7 +148,12 @@ def save_averaging_kernel(file_name, product_ds, data_type, bounds, threshold):
         avg_kernel = avg_kernel[(avg_kernel.latitude >= bounds[1]) & (avg_kernel.latitude <= bounds[3]) & (avg_kernel.longitude >= bounds[0]) & (avg_kernel.longitude <= bounds[2])];
 
     avg_kernel = avg_kernel[avg_kernel.qa_value > threshold]
-    avg_kernel = avg_kernel.drop(['latitude', 'longitude', 'qa_value'], axis = 1).dropna(subset = ['column_averaging_kernel'], axis = 0);
+
+    if data_type == 'CH4':
+        avg_kernel = avg_kernel.drop(['latitude', 'longitude', 'qa_value'], axis = 1).dropna(subset = ['column_averaging_kernel'], axis = 0);
+    elif data_type == 'HCHO':
+        avg_kernel = avg_kernel.drop(['latitude', 'longitude', 'qa_value'], axis = 1).dropna(subset = ['averaging_kernel'], axis = 0);
+
     return avg_kernel;
 
 from shapely import Polygon
@@ -185,6 +197,10 @@ def save_pixel_borders(file_name, product_ds, data_type, bounds, threshold):
     elif data_type == 'NO2':
         merged_dataset = xr.merge([product_ds[['latitude', 'longitude', 'qa_value', 'nitrogendioxide_tropospheric_column']], supporting_data], join = 'left').to_dataframe()
         merged_dataset = merged_dataset.dropna(subset = ['nitrogendioxide_tropospheric_column'], axis = 0);
+    elif data_type == 'HCHO':
+        merged_dataset = xr.merge([product_ds[['latitude', 'longitude', 'qa_value', 'formaldehyde_tropospheric_vertical_column']], supporting_data], join = 'left').to_dataframe()
+        merged_dataset = merged_dataset.dropna(subset = ['formaldehyde_tropospheric_vertical_column'], axis = 0);
+    
     merged_dataset = merged_dataset[merged_dataset.qa_value > threshold];
         
     if bounds != 0:
@@ -243,6 +259,10 @@ def read_scattered_TROPOMI_data(file_name, data_type, threshold = 0.5, bounds = 
             df = original_data[['latitude', 'longitude', 'delta_time', 'time_utc', 'qa_value', 'nitrogendioxide_tropospheric_column', 'nitrogendioxide_tropospheric_column_precision', 'nitrogendioxide_tropospheric_column_precision_kernel', 'averaging_kernel']].to_dataframe() # Takes the variables you are interested in 
         else:
             df = original_data[['latitude', 'longitude', 'delta_time', 'time_utc', 'qa_value', 'nitrogendioxide_tropospheric_column', 'nitrogendioxide_tropospheric_column_precision']].to_dataframe() # Takes the variables you are interested in
+        df['time_utc'] = pd.to_datetime(df['delta_time']);
+
+    elif data_type == 'HCHO':
+        df = original_data[['latitude', 'longitude', 'delta_time', 'time_utc', 'qa_value', 'formaldehyde_tropospheric_vertical_column', 'formaldehyde_tropospheric_vertical_column_precision']].to_dataframe() # Takes the variables you are interested in 
         df['time_utc'] = pd.to_datetime(df['delta_time']);
     
     if (bounds != 0):
@@ -443,10 +463,6 @@ def regrid_scattered_data(gdf, new_grid, data_type):
     
         cell.loc[dissolve_std.index, 'SIF_743_STD'] = dissolve_std.SIF_743.values # Cell now contains the STDEV of each grid.
         cell.loc[dissolve_std.index, 'SIF_735_STD'] = dissolve_std.SIF_735.values # Cell now contains the STDEV of each grid.
-
-    elif (data_type == 'HCHO'):
-        cell.loc[dissolve.index, 'HCHO_avg'] = dissolve.HCHO.values # Cell now contains the mean of each grid.
-        cell.loc[dissolve_std.index, 'HCHO_std'] = dissolve_std.HCHO.values # Cell now contains the STDEV of each grid.
     
     elif (data_type == 'CH4'):
         cell.loc[dissolve.index, 'ch4'] = dissolve.methane_mixing_ratio_bias_corrected.values # Cell now contains the mean of each grid.
@@ -470,6 +486,10 @@ def regrid_scattered_data(gdf, new_grid, data_type):
         cell.loc[dissolve_std.index, 'HDO_column_std'] = dissolve_std.hdo_column.values # Cell now contains the STDEV of each grid.
         cell.loc[dissolve.index, 'delta_d'] = dissolve.deltad.values # Cell now contains the STDEV of each grid.
         cell.loc[dissolve_std.index, 'delta_d_std'] = dissolve_std.deltad.values # Cell now contains the STDEV of each grid.
+
+    elif (data_type == 'HCHO'):
+        cell.loc[dissolve.index, 'HCHO_column'] = dissolve.formaldehyde_tropospheric_vertical_column.values # Cell now contains the mean of each grid.
+        cell.loc[dissolve_std.index, 'HCHO_column_std'] = dissolve_std.formaldehyde_tropospheric_vertical_column.values # Cell now contains the STDEV of each grid.
     
     cell['lon'] = cell.geometry.centroid.x
     cell['lat'] = cell.geometry.centroid.y
