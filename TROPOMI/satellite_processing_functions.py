@@ -144,6 +144,8 @@ def save_averaging_kernel(file_name, product_ds, data_type, bounds, threshold):
     avg_kernel = avg_kernel.drop(['latitude', 'longitude', 'qa_value'], axis = 1).dropna(subset = ['column_averaging_kernel'], axis = 0);
     return avg_kernel;
 
+from shapely import Polygon
+
 def save_pixel_borders(file_name, product_ds, data_type, bounds, threshold):
     """
     Helper function that saves pixel borders from the TROPOMI dataset.
@@ -174,14 +176,14 @@ def save_pixel_borders(file_name, product_ds, data_type, bounds, threshold):
         
     # We merge before, because sometimes the metadata is messed up (time was 0)
     if (data_type == 'CH4'):
-        merged_dataset = xr.merge([product_ds, supporting_data], join = 'left').drop(['layer', 'level']).to_dataframe();
+        merged_dataset = xr.merge([product_ds[['latitude', 'longitude', 'qa_value','methane_mixing_ratio']], supporting_data], join = 'left').to_dataframe();
         merged_dataset = merged_dataset.dropna(subset = ['methane_mixing_ratio'], axis = 0);
     elif data_type == 'SO2':
-        merged_dataset = xr.merge([product_ds, supporting_data], join = 'left').drop('layer').to_dataframe()
+        merged_dataset = xr.merge([product_ds[['latitude', 'longitude', 'qa_value','sulfurdioxide_total_vertical_column']], supporting_data], join = 'left').to_dataframe()
         merged_dataset = merged_dataset.dropna(subset = ['sulfurdioxide_total_vertical_column'], axis = 0);
         merged_dataset = merged_dataset[merged_dataset.sulfurdioxide_total_vertical_column >= -0.001] # Filtering for outliers; see User Guide for negative values
     elif data_type == 'NO2':
-        merged_dataset = xr.merge([product_ds, supporting_data], join = 'left').to_dataframe()
+        merged_dataset = xr.merge([product_ds[['latitude', 'longitude', 'qa_value', 'nitrogendioxide_tropospheric_column']], supporting_data], join = 'left').to_dataframe()
         merged_dataset = merged_dataset.dropna(subset = ['nitrogendioxide_tropospheric_column'], axis = 0);
     merged_dataset = merged_dataset[merged_dataset.qa_value > threshold];
         
@@ -195,7 +197,6 @@ def save_pixel_borders(file_name, product_ds, data_type, bounds, threshold):
     pivot_geolocations = pivot_geolocations.pivot(columns="corner").droplevel(0, axis = 1) 
     pivot_geolocations.columns = ['lat_bound_1', 'lat_bound_2', 'lat_bound_3', 'lat_bound_4', 'lon_bound_1', 'lon_bound_2', 'lon_bound_3', 'lon_bound_4']
     return pivot_geolocations;
-
 
 def read_scattered_TROPOMI_data(file_name, data_type, threshold = 0.5, bounds = 0, geolocation = False, averaging_kernel = False):
     """
@@ -238,11 +239,15 @@ def read_scattered_TROPOMI_data(file_name, data_type, threshold = 0.5, bounds = 
 
     elif data_type == 'NO2':
         threshold = 0.75 # Required for tropospheric NO2 columns -- different from the rest!
-        df = original_data[['latitude', 'longitude', 'delta_time', 'time_utc', 'qa_value', 'nitrogendioxide_tropospheric_column', 'nitrogendioxide_tropospheric_column_precision']].to_dataframe() # Takes the variables you are interested in # ['averaging_kernel']
+        if averaging_kernel:
+            df = original_data[['latitude', 'longitude', 'delta_time', 'time_utc', 'qa_value', 'nitrogendioxide_tropospheric_column', 'nitrogendioxide_tropospheric_column_precision', 'nitrogendioxide_tropospheric_column_precision_kernel', 'averaging_kernel']].to_dataframe() # Takes the variables you are interested in 
+        else:
+            df = original_data[['latitude', 'longitude', 'delta_time', 'time_utc', 'qa_value', 'nitrogendioxide_tropospheric_column', 'nitrogendioxide_tropospheric_column_precision']].to_dataframe() # Takes the variables you are interested in
         df['time_utc'] = pd.to_datetime(df['delta_time']);
     
     if (bounds != 0):
         df = df[(df.latitude >= bounds[1]) & (df.latitude <= bounds[3]) & (df.longitude >= bounds[0]) & (df.longitude <= bounds[2])];
+        
     df = df[df.qa_value > threshold] # Quality-filtering
     original_data.close()
 
@@ -253,8 +258,8 @@ def read_scattered_TROPOMI_data(file_name, data_type, threshold = 0.5, bounds = 
         # SO2 layer height data
         df_layer_height = xr.open_dataset(file_name, group = 'PRODUCT/SO2_LAYER_HEIGHT');
         df_layer_height = df_layer_height[['sulfurdioxide_layer_height', 'sulfurdioxide_total_vertical_column_layer_height', 'qa_value_layer_height']].to_dataframe();
-        df_layer_height = df_layer_height[df_layer_height.qa_value_layer_height > 0.5];
         df_layer_height = df_layer_height.dropna(subset = 'sulfurdioxide_layer_height', axis = 0)
+        df_layer_height = df_layer_height[df_layer_height.qa_value_layer_height > 0.5];
         df = pd.merge(df, df_layer_height, left_index = True, right_index = True, how = 'left');
 
     #### Start options
@@ -265,7 +270,7 @@ def read_scattered_TROPOMI_data(file_name, data_type, threshold = 0.5, bounds = 
 
     if geolocation:
         pivot_geolocations = save_pixel_borders(file_name, original_data, data_type, bounds, threshold);
-        df = pd.merge(df, pivot_geolocations, left_index = True, right_index = True, how = 'right');        
+        df = pd.merge(df, pivot_geolocations, left_index = True, right_index = True, how = 'left');        
         df['geometry'] = df.apply(lambda x: Polygon(zip([x.lon_bound_1, x.lon_bound_2, x.lon_bound_3, x.lon_bound_4], [x.lat_bound_1, x.lat_bound_2, x.lat_bound_3, x.lat_bound_4])), axis = 1); # Create polygons representing each TROPOMI footprint
         gdf = gpd.GeoDataFrame(df, geometry = 'geometry');
     else:
