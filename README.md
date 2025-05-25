@@ -17,6 +17,8 @@ Currently, there are scripts for:
 ### Where did I get the data?
 
 - For TROPOMI, I got all my data from EarthData Search, as the old dhusget script no longer works (RIP).
+- EarthData for VIIRS tiles
+- L2B TROPOSIF was obtained from the [TROPOSIF portal](https://ftp.sron.nl/open-access-data-2/TROPOMI/tropomi/sif/v2.1/l2b/).
 
 ---
 
