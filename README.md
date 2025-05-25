@@ -21,7 +21,12 @@ Currently, there are scripts for:
 ---
 
 ### What should I know before running these scripts?
-Before you run any scripts, make sure you have the following libraries:
+
+For reproductibility, I ran all of these scripts on **Python 3.11.6**. To install my conda environment, run the following command:
+
+`conda env create -f environment.yml`
+
+To summarize the yml file, make sure you have these following libraries:
 
 - Numpy, scipy, matplotlib
 - Xarray
