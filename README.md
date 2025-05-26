@@ -9,7 +9,7 @@ Currently, there are scripts for:
 
 - **TROPOMI**: Methane, Water/HDO, Sulfur Dioxide, Formaldehyde, and Nitrogen Dioxide
 - **Vegetation Indices**: TROPOSIF, SIF (downscaled), and VIIRS Vegetation Indices (both individual tiles and global grid). 
-- **Other**: MOPITT, maybe OMI, maybe GEMS, maybe MODIS Ocean Color?
+- **Other**: MOPITT, GFED4/5, and TROPESS PAN.
 
 ### Wishlist Before I Graduate
 
