@@ -8,8 +8,12 @@ Here is a repository of all of my satellite/remote sensing processing scripts th
 Currently, there are scripts for:
 
 - **TROPOMI**: Methane, Water/HDO, Sulfur Dioxide, Formaldehyde, and Nitrogen Dioxide
-- **Vegetation Indices**: Work-in-progress, but will have SIF, SIF (downscaled), and VIIRS NDVI/NIR. Maybe CCI?
-- **Other**: MOPITT, maybe OMI, maybe GEMS, maybe MODIS Ocean Color? 
+- **Vegetation Indices**: TROPOSIF, SIF (downscaled), and VIIRS Vegetation Indices (both individual tiles and global grid). 
+- **Other**: MOPITT, maybe OMI, maybe GEMS, maybe MODIS Ocean Color?
+
+### Wishlist Before I Graduate
+
+- MODIS CCI
 
 ---
 
